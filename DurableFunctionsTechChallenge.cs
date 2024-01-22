@@ -1,134 +1,95 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Net.Http;
 using System.Threading.Tasks;
+using DurableFunction.Entities;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
-using Microsoft.Azure.WebJobs.Extensions.Storage;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
-using Azure.Data.Tables;
-using System;
-using Microsoft.WindowsAzure.Storage.Table;
+using Newtonsoft.Json;
 
 namespace Company.Function
 {
-    // public class PedidoEntity : Microsoft.WindowsAzure.Storage.Table.TableEntity
-    // {
-    //     public string Status { get; set; }
-    //     public string NumeroDoPedido { get; set; }
-
-    //     public PedidoEntity(string partitionKey, string rowKey)
-    //         : base(partitionKey, rowKey)
-    //     {
-    //     }
-
-    //     public PedidoEntity()
-    //     {
-    //     }
-    // }
-
     public static class DurableFunctionsTechChallenge
-    {            
+    {
+        [FunctionName("DurableFunctionsTechChallenge_HttpStart")]
+        public static async Task<IActionResult> HttpStart(
+         [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req,
+         [DurableClient] IDurableOrchestrationClient starter,
+         ILogger log)
+        {
+            string corpoRequisicao = await new StreamReader(req.Body).ReadToEndAsync();
+            List<PedidoItemEntity> pedidos = JsonConvert.DeserializeObject<List<PedidoItemEntity>>(corpoRequisicao);
+
+            string instanceId = await starter.StartNewAsync("DurableFunctionsTechChallenge", null, pedidos);
+
+            log.LogInformation("Iniciada orquestração com ID = '{instanceId}'.", instanceId);
+
+            return starter.CreateCheckStatusResponse(req, instanceId);
+        }
+
         [FunctionName("DurableFunctionsTechChallenge")]
         public static async Task<List<string>> RunOrchestrator(
             [OrchestrationTrigger] IDurableOrchestrationContext context)
         {
             var outputs = new List<string>();
 
-            string produto = "Celular";
+            var itensPedido = context.GetInput<List<PedidoItemEntity>>();
 
-            outputs.Add(await context.CallActivityAsync<string>("BuscarProduto", produto));
-
-            bool aprovado = await context.CallActivityAsync<bool>("AprovarPedido", produto);
-
-            if (aprovado)
+            var pedido = new PedidoEntity
             {
-                outputs.Add(await context.CallActivityAsync<string>("EfetuarPagamento", produto));
-                outputs.Add(await context.CallActivityAsync<string>("Entregar", produto));
+                NumeroPedido = Guid.NewGuid().ToString().Split("-")[0],
+                Status = "Iniciado",
+                PedidoItens = itensPedido
+            };
 
-                string informacao = $"Pedido aprovado para o produto {produto}.";
-                await context.CallActivityAsync("ArmazenarInformacoesNoStorage", informacao);
-            }
-            else
-            {
-                outputs.Add($"Pedido para o produto {produto} não foi aprovado.");
-            }
+            foreach (var pedidoItens in pedido.PedidoItens)
+                outputs.Add(await context.CallActivityAsync<string>("BuscarProduto", pedidoItens.Produto));
 
+            bool aprovado = await context.CallActivityAsync<bool>("AprovarPedido", pedido);
+            if (!aprovado) { outputs.Add($"Pedido {pedido.NumeroPedido} não foi aprovado."); return outputs; }
+
+            outputs.Add(await context.CallActivityAsync<string>("EfetuarPagamento", pedido));
+            outputs.Add(await context.CallActivityAsync<string>("Entregar", pedido));
+
+            await context.CallActivityAsync("ArmazenarInformacoesNaTabela", pedido);
             return outputs;
         }
 
         [FunctionName("BuscarProduto")]
-        public static string BuscarProduto([ActivityTrigger] string name, ILogger log)
+        public static string BuscarProduto([ActivityTrigger] string produto, ILogger log)
         {
-            log.LogInformation("Executando a atividade Buscar Produto {name}.", name);
-            return $"Buscando produto {name}!";
+            log.LogInformation("Executando a atividade Buscar Produto {produto}.", produto);
+            return $"Buscando produto {produto}!";
         }
 
         [FunctionName("AprovarPedido")]
-        public static bool AprovarPedido([ActivityTrigger] string pedido, ILogger log)
+        public static bool AprovarPedido([ActivityTrigger] PedidoEntity pedido, ILogger log)
         {
             log.LogInformation($"Aprovando pedido {pedido}.");
 
-            bool aprovado = true;
-            
-            return aprovado;
+            foreach (var pedidoItem in pedido.PedidoItens)
+                log.LogInformation($"Item {pedidoItem.Produto} - {pedidoItem.Quantidade}.");
+
+            Random random = new Random();
+            return random.Next(0, 2) != 0;
         }
 
         [FunctionName("EfetuarPagamento")]
-        public static string EfetuarPagamento([ActivityTrigger] string name, ILogger log)
+        public static string EfetuarPagamento([ActivityTrigger] PedidoEntity pedido, ILogger log)
         {
-            log.LogInformation("Executando a atividade Efetuar Pagamento {name}.", name);
-            return $"Realizando pagamento {name}!";
+            log.LogInformation($"Executando a atividade Efetuar Pagamento {pedido.NumeroPedido}.");
+            return $"Realizando pagamento {pedido.NumeroPedido}!";
         }
 
         [FunctionName("Entregar")]
-        public static string Entregar([ActivityTrigger] string name, ILogger log)
+        public static string Entregar([ActivityTrigger] PedidoEntity pedido, ILogger log)
         {
-            log.LogInformation("Executando a atividade Entregar {name}.", name);
-            return $"Entregando produto {name}!";
-        }
-
-        // Ex para adicionar na table da azure
-
-        // [FunctionName("ArmazenarInformacoesNaTabela")]
-        // public static async Task ArmazenarInformacoesNaTabela(
-        //     [ActivityTrigger] string informacao,
-        //     [Table("pedidos")] CloudTable pedidosTable,
-        //     ILogger log)
-        // {
-        //     var pedidoEntity = new PedidoEntity("ParticaoPadrao", Guid.NewGuid().ToString())
-        //     {
-        //         Status = "Aprovado",
-        //         NumeroDoPedido = "1"
-        //     };
-
-        //     TableOperation insertOperation = TableOperation.Insert(pedidoEntity);
-        //     await pedidosTable.ExecuteAsync(insertOperation);
-
-        //     log.LogInformation($"Armazenando informações na tabela: {informacao}");
-        // }
-
-        // Ex para adicionar no blob
-
-        // [FunctionName("ArmazenarInformacoesNoStorage")]
-        // public static void ArmazenarInformacoesNoStorage([ActivityTrigger] string informacao, [Blob("test-durable-function/{rand-guid}.txt", FileAccess.Write)] TextWriter writer, ILogger log)
-        // {
-        //     log.LogInformation($"Armazenando informações no Storage: {informacao}");
-        //     writer.Write(informacao);
-        // }
-
-        [FunctionName("DurableFunctionsTechChallenge_HttpStart")]
-        public static async Task<HttpResponseMessage> HttpStart(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
-            [DurableClient] IDurableOrchestrationClient starter,
-            ILogger log)
-        {
-            string instanceId = await starter.StartNewAsync("DurableFunctionsTechChallenge", null);
-
-            log.LogInformation("Started orchestration with ID = '{instanceId}'.", instanceId);
-
-            return starter.CreateCheckStatusResponse(req, instanceId);
-        }
+            log.LogInformation($"Executando a atividade Entregar {pedido.NumeroPedido}.");
+            return $"Entregando produto {pedido.NumeroPedido}!";
+        }      
     }
 }
