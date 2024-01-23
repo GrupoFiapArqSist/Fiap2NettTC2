@@ -21,10 +21,16 @@ namespace Company.Function
          [DurableClient] IDurableOrchestrationClient starter,
          ILogger log)
         {
-            string corpoRequisicao = await new StreamReader(req.Body).ReadToEndAsync();
-            List<PedidoItemEntity> pedidos = JsonConvert.DeserializeObject<List<PedidoItemEntity>>(corpoRequisicao);
+            var corpoRequisicao = await new StreamReader(req.Body).ReadToEndAsync();
+            var itensPedido = JsonConvert.DeserializeObject<List<PedidoItemEntity>>(corpoRequisicao);            
+            var pedido = new PedidoEntity
+            {
+                NumeroPedido = Guid.NewGuid().ToString().Split("-")[0],
+                Status = "Iniciado",
+                PedidoItens = itensPedido
+            };
 
-            string instanceId = await starter.StartNewAsync("DurableFunctionsTechChallenge", null, pedidos);
+            var instanceId = await starter.StartNewAsync("DurableFunctionsTechChallenge", null, pedido);
 
             log.LogInformation("Iniciada orquestração com ID = '{instanceId}'.", instanceId);
 
@@ -37,25 +43,18 @@ namespace Company.Function
         {
             var outputs = new List<string>();
 
-            var itensPedido = context.GetInput<List<PedidoItemEntity>>();
-
-            var pedido = new PedidoEntity
-            {
-                NumeroPedido = Guid.NewGuid().ToString().Split("-")[0],
-                Status = "Iniciado",
-                PedidoItens = itensPedido
-            };
+            var pedido = context.GetInput<PedidoEntity>();
 
             foreach (var pedidoItens in pedido.PedidoItens)
                 outputs.Add(await context.CallActivityAsync<string>("BuscarProduto", pedidoItens.Produto));
 
-            bool aprovado = await context.CallActivityAsync<bool>("AprovarPedido", pedido);
-            if (!aprovado) { outputs.Add($"Pedido {pedido.NumeroPedido} não foi aprovado."); return outputs; }
+            var aprovarPedido = await context.CallActivityAsync<string>("AprovarPedido", pedido);
+            outputs.Add(aprovarPedido);
+            if (aprovarPedido.Contains("não")) { return outputs; }
 
             outputs.Add(await context.CallActivityAsync<string>("EfetuarPagamento", pedido));
             outputs.Add(await context.CallActivityAsync<string>("Entregar", pedido));
 
-            await context.CallActivityAsync("ArmazenarInformacoesNaTabela", pedido);
             return outputs;
         }
 
@@ -67,7 +66,7 @@ namespace Company.Function
         }
 
         [FunctionName("AprovarPedido")]
-        public static bool AprovarPedido([ActivityTrigger] PedidoEntity pedido, ILogger log)
+        public static string AprovarPedido([ActivityTrigger] PedidoEntity pedido, ILogger log)
         {
             log.LogInformation($"Aprovando pedido {pedido}.");
 
@@ -75,21 +74,22 @@ namespace Company.Function
                 log.LogInformation($"Item {pedidoItem.Produto} - {pedidoItem.Quantidade}.");
 
             Random random = new Random();
-            return random.Next(0, 2) != 0;
+            var pedidoAprovado = random.Next(0, 2) != 0 ? " não" : string.Empty;
+            return $"Pedido {pedido.NumeroPedido}{pedidoAprovado} foi aprovado";
         }
 
         [FunctionName("EfetuarPagamento")]
         public static string EfetuarPagamento([ActivityTrigger] PedidoEntity pedido, ILogger log)
         {
             log.LogInformation($"Executando a atividade Efetuar Pagamento {pedido.NumeroPedido}.");
-            return $"Realizando pagamento {pedido.NumeroPedido}!";
+            return $"Realizando pagamento pedido: {pedido.NumeroPedido}!";
         }
 
         [FunctionName("Entregar")]
         public static string Entregar([ActivityTrigger] PedidoEntity pedido, ILogger log)
         {
             log.LogInformation($"Executando a atividade Entregar {pedido.NumeroPedido}.");
-            return $"Entregando produto {pedido.NumeroPedido}!";
-        }      
+            return $"Entregando produtos do pedido: {pedido.NumeroPedido}!";
+        }
     }
 }
