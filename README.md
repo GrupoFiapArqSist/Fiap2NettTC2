@@ -33,8 +33,11 @@ Criar um arquivo local.settings.json, neste modelo:
 Após rodar o projeto, obtemos a seguinte url local: http://localhost:7071/api/DurableFunctionsTechChallenge_HttpStart
 
 No Postman, obtemos a seguinte resposta para quando o pedido é Aprovado:
+![result1](https://github.com/GrupoFiapArqSist/Fiap2NettTC2/assets/143532676/3f8d9281-e944-4395-8add-5e1e6a75cc4c)
+
 
 E para quando é Negado:
+![result2](https://github.com/GrupoFiapArqSist/Fiap2NettTC2/assets/143532676/296000a1-d70b-40ce-890f-158ce6e57307)
 
 
 
